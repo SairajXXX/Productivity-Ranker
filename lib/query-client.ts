@@ -50,7 +50,24 @@ export const getQueryFn: <T>(options: {
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
     const baseUrl = getApiUrl();
-    const url = new URL(queryKey.join("/") as string, baseUrl);
+    const pathParts: string[] = [];
+    const queryParams: string[] = [];
+
+    for (const part of queryKey) {
+      const s = String(part);
+      if (s.includes("=")) {
+        queryParams.push(s);
+      } else {
+        pathParts.push(s);
+      }
+    }
+
+    let urlStr = pathParts.join("/");
+    if (queryParams.length > 0) {
+      urlStr += "?" + queryParams.join("&");
+    }
+
+    const url = new URL(urlStr, baseUrl);
 
     const res = await fetch(url.toString(), {
       credentials: "include",

@@ -13,8 +13,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/lib/auth-context";
-import { apiRequest, queryClient, getApiUrl } from "@/lib/query-client";
-import { fetch } from "expo/fetch";
+import { apiRequest, queryClient, getApiUrl, getQueryFn } from "@/lib/query-client";
 import * as Haptics from "expo-haptics";
 import Colors from "@/constants/colors";
 
@@ -23,7 +22,7 @@ function getToday() {
 }
 
 function getDayName(dateStr: string) {
-  const d = new Date(dateStr + "T00:00:00");
+  const d = new Date(dateStr + "T12:00:00");
   return d.toLocaleDateString("en-US", { weekday: "short" });
 }
 
@@ -33,23 +32,13 @@ export default function DashboardScreen() {
   const webTopInset = Platform.OS === "web" ? 67 : 0;
 
   const entriesQuery = useQuery<any[]>({
-    queryKey: ["/api/entries"],
-    queryFn: async () => {
-      const baseUrl = getApiUrl();
-      const res = await fetch(`${baseUrl}api/entries?date=${getToday()}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch");
-      return res.json();
-    },
+    queryKey: ["/api/entries", `date=${getToday()}`],
+    queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
   const scoresQuery = useQuery<any[]>({
     queryKey: ["/api/scores/daily"],
-    queryFn: async () => {
-      const baseUrl = getApiUrl();
-      const res = await fetch(`${baseUrl}api/scores/daily`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch");
-      return res.json();
-    },
+    queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
   const scoreMutation = useMutation({
@@ -57,7 +46,7 @@ export default function DashboardScreen() {
       const res = await apiRequest("POST", "/api/score/daily", { date: getToday() });
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/scores/daily"] });
     },
   });
@@ -65,6 +54,9 @@ export default function DashboardScreen() {
   const todayEntries = entriesQuery.data || [];
   const weekScores = scoresQuery.data || [];
   const todayScore = weekScores.find((s: any) => s.date === getToday());
+  const latestScore = scoreMutation.data as any;
+
+  const displayScore = todayScore || latestScore;
 
   const completedCount = todayEntries.filter((e: any) => e.completed).length;
   const totalMinutes = todayEntries.reduce((sum: number, e: any) => sum + (e.duration || 0), 0);
@@ -95,20 +87,24 @@ export default function DashboardScreen() {
   return (
     <View style={[styles.container, { backgroundColor: Colors.light.background }]}>
       <ScrollView
+        style={{ flex: 1 }}
         contentContainerStyle={{
           paddingTop: insets.top + 16 + webTopInset,
           paddingBottom: 100 + (Platform.OS === "web" ? 34 : 0),
           paddingHorizontal: 20,
+          flexGrow: 1,
         }}
         refreshControl={
           <RefreshControl refreshing={false} onRefresh={onRefresh} tintColor={Colors.light.tint} />
         }
         showsVerticalScrollIndicator={false}
+        bounces={true}
+        scrollEnabled={true}
       >
         <View style={styles.header}>
           <View>
             <Text style={styles.greeting}>
-              Hi, {user?.fullName?.split(" ")[0]}
+              Hi, {user?.fullName?.split(" ")[0] || "there"}
             </Text>
             <Text style={styles.dateText}>
               {new Date().toLocaleDateString("en-US", {
@@ -118,7 +114,7 @@ export default function DashboardScreen() {
               })}
             </Text>
           </View>
-          <Pressable onPress={handleLogout} style={styles.logoutBtn}>
+          <Pressable onPress={handleLogout} hitSlop={8}>
             <Ionicons name="log-out-outline" size={22} color={Colors.light.textSecondary} />
           </Pressable>
         </View>
@@ -129,10 +125,7 @@ export default function DashboardScreen() {
             <Pressable
               onPress={handleScorePress}
               disabled={scoreMutation.isPending}
-              style={({ pressed }) => [
-                styles.refreshScoreBtn,
-                { opacity: pressed ? 0.7 : 1 },
-              ]}
+              hitSlop={8}
             >
               {scoreMutation.isPending ? (
                 <ActivityIndicator size="small" color={Colors.light.tint} />
@@ -142,15 +135,15 @@ export default function DashboardScreen() {
             </Pressable>
           </View>
 
-          {todayScore ? (
+          {displayScore ? (
             <View style={styles.scoreContent}>
               <Text
                 style={[
                   styles.scoreNumber,
-                  { color: getScoreColor(todayScore.score) },
+                  { color: getScoreColor(displayScore.score) },
                 ]}
               >
-                {Math.round(todayScore.score)}
+                {Math.round(displayScore.score)}
               </Text>
               <Text style={styles.scoreLabel}>/100</Text>
             </View>
@@ -162,19 +155,13 @@ export default function DashboardScreen() {
             </View>
           )}
 
-          {todayScore?.aiInsight ? (
-            <Text style={styles.insightText}>{todayScore.aiInsight}</Text>
+          {displayScore?.aiInsight || displayScore?.insight ? (
+            <Text style={styles.insightText}>{displayScore.aiInsight || displayScore.insight}</Text>
           ) : (
             <Text style={styles.insightText}>
               {todayEntries.length > 0
                 ? "Tap the sparkle icon to get your AI score"
                 : "Log some activities to get scored"}
-            </Text>
-          )}
-
-          {scoreMutation.data && !todayScore && (
-            <Text style={styles.insightText}>
-              {(scoreMutation.data as any).insight}
             </Text>
           )}
         </View>
@@ -205,8 +192,7 @@ export default function DashboardScreen() {
                 (s: any) => getDayName(s.date) === day,
               );
               const score = scoreData ? Math.round(scoreData.score) : null;
-              const isToday =
-                getDayName(getToday()) === day;
+              const isToday = getDayName(getToday()) === day;
 
               return (
                 <View
@@ -267,7 +253,7 @@ export default function DashboardScreen() {
                 <View style={styles.entryInfo}>
                   <Text style={styles.entryTitle}>{entry.title}</Text>
                   <Text style={styles.entryMeta}>
-                    {entry.category} &middot; {entry.duration}min
+                    {entry.category} - {entry.duration}min
                   </Text>
                 </View>
                 {entry.completed && (
@@ -307,20 +293,14 @@ const styles = StyleSheet.create({
     color: Colors.light.textSecondary,
     marginTop: 2,
   },
-  logoutBtn: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-  },
   scoreCard: {
     backgroundColor: Colors.light.surface,
     borderRadius: 20,
     padding: 24,
     marginBottom: 16,
-    shadowColor: Colors.light.cardShadow,
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 1,
+    shadowOpacity: 0.06,
     shadowRadius: 12,
     elevation: 3,
   },
@@ -336,12 +316,6 @@ const styles = StyleSheet.create({
     color: Colors.light.textSecondary,
     textTransform: "uppercase" as const,
     letterSpacing: 0.5,
-  },
-  refreshScoreBtn: {
-    width: 36,
-    height: 36,
-    alignItems: "center",
-    justifyContent: "center",
   },
   scoreContent: {
     flexDirection: "row",
@@ -401,9 +375,9 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     justifyContent: "space-between",
-    shadowColor: Colors.light.cardShadow,
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 1,
+    shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 2,
   },
@@ -443,9 +417,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 14,
     marginBottom: 8,
-    shadowColor: Colors.light.cardShadow,
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 1,
+    shadowOpacity: 0.04,
     shadowRadius: 4,
     elevation: 1,
   },

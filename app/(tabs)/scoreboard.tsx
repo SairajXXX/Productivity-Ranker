@@ -3,15 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  FlatList,
+  ScrollView,
   RefreshControl,
   Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import { getApiUrl } from "@/lib/query-client";
-import { fetch } from "expo/fetch";
+import { getQueryFn } from "@/lib/query-client";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 
@@ -37,59 +36,6 @@ function getMedalIcon(rank: number): "trophy" | "medal" | "ribbon" | "ellipse" {
   return "ellipse";
 }
 
-function ScoreboardItem({
-  item,
-  rank,
-  isCurrentUser,
-}: {
-  item: ScoreboardEntry;
-  rank: number;
-  isCurrentUser: boolean;
-}) {
-  const medalColor = getMedalColor(rank);
-
-  return (
-    <View
-      style={[
-        styles.entryCard,
-        isCurrentUser && styles.currentUserCard,
-        rank <= 3 && styles.topThreeCard,
-      ]}
-    >
-      <View style={styles.rankArea}>
-        {rank <= 3 ? (
-          <View style={[styles.medalCircle, { backgroundColor: medalColor + "20" }]}>
-            <Ionicons name={getMedalIcon(rank)} size={18} color={medalColor} />
-          </View>
-        ) : (
-          <Text style={styles.rankNumber}>#{rank}</Text>
-        )}
-      </View>
-
-      <View style={styles.userInfo}>
-        <View style={styles.nameRow}>
-          <Text style={[styles.userName, isCurrentUser && { color: Colors.light.tint }]}>
-            {item.fullName}
-          </Text>
-          {isCurrentUser && (
-            <View style={styles.youBadge}>
-              <Text style={styles.youBadgeText}>You</Text>
-            </View>
-          )}
-        </View>
-        <Text style={styles.userOccupation}>{item.occupation}</Text>
-      </View>
-
-      <View style={styles.scoreArea}>
-        <Text style={[styles.scoreValue, rank <= 3 && { color: medalColor }]}>
-          {Math.round(item.avgScore)}
-        </Text>
-        <Text style={styles.scoreSuffix}>avg</Text>
-      </View>
-    </View>
-  );
-}
-
 export default function ScoreboardScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -100,21 +46,14 @@ export default function ScoreboardScreen() {
     scoreboard: ScoreboardEntry[];
   }>({
     queryKey: ["/api/scoreboard"],
-    queryFn: async () => {
-      const baseUrl = getApiUrl();
-      const res = await fetch(`${baseUrl}api/scoreboard`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to fetch");
-      return res.json();
-    },
+    queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
   const scoreboard = scoreboardQuery.data?.scoreboard || [];
   const weekStart = scoreboardQuery.data?.weekStart;
 
   function formatWeek(ws: string) {
-    const d = new Date(ws + "T00:00:00");
+    const d = new Date(ws + "T12:00:00");
     const end = new Date(d);
     end.setDate(d.getDate() + 6);
     return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} - ${end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
@@ -122,37 +61,32 @@ export default function ScoreboardScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: Colors.light.background }]}>
-      <View style={[styles.headerBar, { paddingTop: insets.top + 12 + webTopInset }]}>
-        <Text style={styles.headerTitle}>Scoreboard</Text>
-        {weekStart && (
-          <Text style={styles.weekLabel}>{formatWeek(weekStart)}</Text>
-        )}
-      </View>
-
-      <FlatList
-        data={scoreboard}
-        renderItem={({ item, index }) => (
-          <ScoreboardItem
-            item={item}
-            rank={index + 1}
-            isCurrentUser={item.userId === user?.id}
-          />
-        )}
-        keyExtractor={(item) => item.userId.toString()}
+      <ScrollView
+        style={{ flex: 1 }}
         contentContainerStyle={{
-          paddingHorizontal: 20,
+          paddingTop: insets.top + 12 + webTopInset,
           paddingBottom: 100 + (Platform.OS === "web" ? 34 : 0),
+          paddingHorizontal: 20,
+          flexGrow: 1,
         }}
-        scrollEnabled={scoreboard.length > 0}
         showsVerticalScrollIndicator={false}
+        bounces={true}
         refreshControl={
           <RefreshControl
-            refreshing={scoreboardQuery.isRefetching}
+            refreshing={!!scoreboardQuery.isRefetching}
             onRefresh={() => scoreboardQuery.refetch()}
             tintColor={Colors.light.tint}
           />
         }
-        ListEmptyComponent={
+      >
+        <View style={styles.headerBar}>
+          <Text style={styles.headerTitle}>Scoreboard</Text>
+          {weekStart && (
+            <Text style={styles.weekLabel}>{formatWeek(weekStart)}</Text>
+          )}
+        </View>
+
+        {scoreboard.length === 0 ? (
           <View style={styles.emptyState}>
             <Ionicons name="podium-outline" size={48} color={Colors.light.border} />
             <Text style={styles.emptyTitle}>No scores yet</Text>
@@ -160,8 +94,55 @@ export default function ScoreboardScreen() {
               Log activities and get scored to appear on the board
             </Text>
           </View>
-        }
-      />
+        ) : (
+          scoreboard.map((item, index) => {
+            const rank = index + 1;
+            const isCurrentUser = item.userId === user?.id;
+            const medalColor = getMedalColor(rank);
+
+            return (
+              <View
+                key={item.userId}
+                style={[
+                  styles.entryCard,
+                  isCurrentUser && styles.currentUserCard,
+                ]}
+              >
+                <View style={styles.rankArea}>
+                  {rank <= 3 ? (
+                    <View style={[styles.medalCircle, { backgroundColor: medalColor + "20" }]}>
+                      <Ionicons name={getMedalIcon(rank)} size={18} color={medalColor} />
+                    </View>
+                  ) : (
+                    <Text style={styles.rankNumber}>#{rank}</Text>
+                  )}
+                </View>
+
+                <View style={styles.userInfo}>
+                  <View style={styles.nameRow}>
+                    <Text style={[styles.userName, isCurrentUser && { color: Colors.light.tint }]}>
+                      {item.fullName}
+                    </Text>
+                    {isCurrentUser && (
+                      <View style={styles.youBadge}>
+                        <Text style={styles.youBadgeText}>You</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.userOccupation}>{item.occupation}</Text>
+                </View>
+
+                <View style={styles.scoreArea}>
+                  <Text style={[styles.scoreValue, rank <= 3 && { color: medalColor }]}>
+                    {Math.round(item.avgScore)}
+                  </Text>
+                  <Text style={styles.scoreSuffix}>avg</Text>
+                </View>
+              </View>
+            );
+          })
+        )}
+      </ScrollView>
     </View>
   );
 }
@@ -171,8 +152,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   headerBar: {
-    paddingHorizontal: 20,
-    paddingBottom: 16,
+    marginBottom: 16,
   },
   headerTitle: {
     fontSize: 24,
@@ -191,20 +171,15 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 14,
     marginBottom: 8,
-    shadowColor: Colors.light.cardShadow,
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 1,
+    shadowOpacity: 0.04,
     shadowRadius: 4,
     elevation: 1,
   },
   currentUserCard: {
     borderWidth: 1.5,
     borderColor: Colors.light.tint,
-  },
-  topThreeCard: {
-    shadowOpacity: 1,
-    shadowRadius: 8,
-    elevation: 3,
   },
   rankArea: {
     width: 44,

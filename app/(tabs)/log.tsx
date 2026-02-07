@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -6,15 +6,14 @@ import {
   Pressable,
   StyleSheet,
   Alert,
-  FlatList,
+  ScrollView,
   ActivityIndicator,
   Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import { apiRequest, queryClient, getApiUrl } from "@/lib/query-client";
-import { fetch } from "expo/fetch";
+import { apiRequest, queryClient, getQueryFn } from "@/lib/query-client";
 import * as Haptics from "expo-haptics";
 import Colors from "@/constants/colors";
 
@@ -45,25 +44,18 @@ export default function LogScreen() {
   const [showForm, setShowForm] = useState(false);
 
   const entriesQuery = useQuery<any[]>({
-    queryKey: ["/api/entries"],
-    queryFn: async () => {
-      const baseUrl = getApiUrl();
-      const res = await fetch(`${baseUrl}api/entries?date=${getToday()}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to fetch");
-      return res.json();
-    },
+    queryKey: ["/api/entries", `date=${getToday()}`],
+    queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
   const addMutation = useMutation({
     mutationFn: async () => {
       return apiRequest("POST", "/api/entries", {
-        title,
+        title: title.trim(),
         category,
         duration,
         completed,
-        notes: notes || null,
+        notes: notes.trim() || null,
         date: getToday(),
       });
     },
@@ -111,189 +103,155 @@ export default function LogScreen() {
 
   const entries = entriesQuery.data || [];
 
-  function renderEntry({ item }: { item: any }) {
-    const cat = CATEGORIES.find((c) => c.key === item.category);
-    return (
-      <Pressable
-        onLongPress={() => handleDelete(item.id)}
-        style={styles.entryCard}
-      >
-        <View style={[styles.categoryIcon, { backgroundColor: cat?.color + "18" }]}>
-          <Ionicons name={cat?.icon || "ellipse"} size={20} color={cat?.color || "#666"} />
-        </View>
-        <View style={styles.entryDetails}>
-          <Text style={styles.entryTitle}>{item.title}</Text>
-          <Text style={styles.entryMeta}>
-            {cat?.label} &middot; {item.duration}min
-            {item.notes ? ` &middot; ${item.notes}` : ""}
-          </Text>
-        </View>
-        <View
-          style={[
-            styles.statusBadge,
-            {
-              backgroundColor: item.completed
-                ? Colors.light.accentLight
-                : Colors.light.warningLight,
-            },
-          ]}
-        >
-          <Ionicons
-            name={item.completed ? "checkmark" : "time-outline"}
-            size={14}
-            color={item.completed ? Colors.light.accent : Colors.light.warning}
-          />
-        </View>
-      </Pressable>
-    );
-  }
-
   return (
     <View style={[styles.container, { backgroundColor: Colors.light.background }]}>
-      <View style={[styles.headerBar, { paddingTop: insets.top + 12 + webTopInset }]}>
-        <Text style={styles.headerTitle}>Log Activity</Text>
-        <Pressable
-          onPress={() => {
-            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setShowForm(!showForm);
-          }}
-          style={({ pressed }) => [
-            styles.addBtn,
-            { opacity: pressed ? 0.7 : 1 },
-          ]}
-        >
-          <Ionicons name={showForm ? "close" : "add"} size={24} color={Colors.light.tint} />
-        </Pressable>
-      </View>
-
-      {showForm && (
-        <View style={styles.formContainer}>
-          <TextInput
-            style={styles.titleInput}
-            value={title}
-            onChangeText={setTitle}
-            placeholder="What did you do?"
-            placeholderTextColor={Colors.light.textSecondary}
-          />
-
-          <Text style={styles.formLabel}>Category</Text>
-          <View style={styles.categoryGrid}>
-            {CATEGORIES.map((cat) => (
-              <Pressable
-                key={cat.key}
-                onPress={() => {
-                  setCategory(cat.key);
-                  if (Platform.OS !== "web") Haptics.selectionAsync();
-                }}
-                style={[
-                  styles.categoryChip,
-                  category === cat.key && {
-                    backgroundColor: cat.color + "18",
-                    borderColor: cat.color,
-                  },
-                ]}
-              >
-                <Ionicons
-                  name={cat.icon}
-                  size={16}
-                  color={category === cat.key ? cat.color : Colors.light.textSecondary}
-                />
-                <Text
-                  style={[
-                    styles.categoryChipText,
-                    category === cat.key && { color: cat.color },
-                  ]}
-                >
-                  {cat.label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
-          <Text style={styles.formLabel}>Duration (minutes)</Text>
-          <View style={styles.durationRow}>
-            {DURATIONS.map((d) => (
-              <Pressable
-                key={d}
-                onPress={() => {
-                  setDuration(d);
-                  if (Platform.OS !== "web") Haptics.selectionAsync();
-                }}
-                style={[
-                  styles.durationChip,
-                  duration === d && styles.durationChipActive,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.durationText,
-                    duration === d && styles.durationTextActive,
-                  ]}
-                >
-                  {d}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{
+          paddingTop: insets.top + 12 + webTopInset,
+          paddingBottom: 100 + (Platform.OS === "web" ? 34 : 0),
+          paddingHorizontal: 20,
+          flexGrow: 1,
+        }}
+        showsVerticalScrollIndicator={false}
+        bounces={true}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.headerBar}>
+          <Text style={styles.headerTitle}>Log Activity</Text>
           <Pressable
             onPress={() => {
-              setCompleted(!completed);
-              if (Platform.OS !== "web") Haptics.selectionAsync();
+              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowForm(!showForm);
             }}
-            style={styles.completedToggle}
-          >
-            <Ionicons
-              name={completed ? "checkmark-circle" : "ellipse-outline"}
-              size={22}
-              color={completed ? Colors.light.accent : Colors.light.textSecondary}
-            />
-            <Text style={styles.completedText}>
-              {completed ? "Completed" : "In Progress"}
-            </Text>
-          </Pressable>
-
-          <TextInput
-            style={styles.notesInput}
-            value={notes}
-            onChangeText={setNotes}
-            placeholder="Notes (optional)"
-            placeholderTextColor={Colors.light.textSecondary}
-            multiline
-          />
-
-          <Pressable
-            onPress={handleAdd}
-            disabled={addMutation.isPending}
+            hitSlop={8}
             style={({ pressed }) => [
-              styles.submitBtn,
-              { opacity: pressed ? 0.85 : 1 },
+              styles.addBtn,
+              { opacity: pressed ? 0.7 : 1 },
             ]}
           >
-            {addMutation.isPending ? (
-              <ActivityIndicator color="#FFF" />
-            ) : (
-              <>
-                <Ionicons name="add-circle" size={20} color="#FFF" />
-                <Text style={styles.submitText}>Add Activity</Text>
-              </>
-            )}
+            <Ionicons name={showForm ? "close" : "add"} size={28} color={Colors.light.tint} />
           </Pressable>
         </View>
-      )}
 
-      <FlatList
-        data={entries}
-        renderItem={renderEntry}
-        keyExtractor={(item) => item.id.toString()}
-        contentContainerStyle={{
-          paddingHorizontal: 20,
-          paddingBottom: 100 + (Platform.OS === "web" ? 34 : 0),
-          paddingTop: showForm ? 0 : 8,
-        }}
-        scrollEnabled={entries.length > 0}
-        showsVerticalScrollIndicator={false}
-        ListEmptyComponent={
+        {showForm && (
+          <View style={styles.formContainer}>
+            <TextInput
+              style={styles.titleInput}
+              value={title}
+              onChangeText={setTitle}
+              placeholder="What did you do?"
+              placeholderTextColor={Colors.light.textSecondary}
+              autoFocus
+            />
+
+            <Text style={styles.formLabel}>Category</Text>
+            <View style={styles.categoryGrid}>
+              {CATEGORIES.map((cat) => (
+                <Pressable
+                  key={cat.key}
+                  onPress={() => {
+                    setCategory(cat.key);
+                    if (Platform.OS !== "web") Haptics.selectionAsync();
+                  }}
+                  style={[
+                    styles.categoryChip,
+                    category === cat.key && {
+                      backgroundColor: cat.color + "18",
+                      borderColor: cat.color,
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name={cat.icon}
+                    size={16}
+                    color={category === cat.key ? cat.color : Colors.light.textSecondary}
+                  />
+                  <Text
+                    style={[
+                      styles.categoryChipText,
+                      category === cat.key && { color: cat.color },
+                    ]}
+                  >
+                    {cat.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.formLabel}>Duration (minutes)</Text>
+            <View style={styles.durationRow}>
+              {DURATIONS.map((d) => (
+                <Pressable
+                  key={d}
+                  onPress={() => {
+                    setDuration(d);
+                    if (Platform.OS !== "web") Haptics.selectionAsync();
+                  }}
+                  style={[
+                    styles.durationChip,
+                    duration === d && styles.durationChipActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.durationText,
+                      duration === d && styles.durationTextActive,
+                    ]}
+                  >
+                    {d}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Pressable
+              onPress={() => {
+                setCompleted(!completed);
+                if (Platform.OS !== "web") Haptics.selectionAsync();
+              }}
+              style={styles.completedToggle}
+            >
+              <Ionicons
+                name={completed ? "checkmark-circle" : "ellipse-outline"}
+                size={22}
+                color={completed ? Colors.light.accent : Colors.light.textSecondary}
+              />
+              <Text style={styles.completedText}>
+                {completed ? "Completed" : "In Progress"}
+              </Text>
+            </Pressable>
+
+            <TextInput
+              style={styles.notesInput}
+              value={notes}
+              onChangeText={setNotes}
+              placeholder="Notes (optional)"
+              placeholderTextColor={Colors.light.textSecondary}
+              multiline
+            />
+
+            <Pressable
+              onPress={handleAdd}
+              disabled={addMutation.isPending}
+              style={({ pressed }) => [
+                styles.submitBtn,
+                { opacity: pressed ? 0.85 : 1 },
+              ]}
+            >
+              {addMutation.isPending ? (
+                <ActivityIndicator color="#FFF" />
+              ) : (
+                <>
+                  <Ionicons name="add-circle" size={20} color="#FFF" />
+                  <Text style={styles.submitText}>Add Activity</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        )}
+
+        {entries.length === 0 && !showForm && (
           <View style={styles.emptyState}>
             <Ionicons name="clipboard-outline" size={48} color={Colors.light.border} />
             <Text style={styles.emptyTitle}>No activities today</Text>
@@ -301,8 +259,46 @@ export default function LogScreen() {
               Tap the + button to log your first activity
             </Text>
           </View>
-        }
-      />
+        )}
+
+        {entries.map((item: any) => {
+          const cat = CATEGORIES.find((c) => c.key === item.category);
+          return (
+            <Pressable
+              key={item.id}
+              onLongPress={() => handleDelete(item.id)}
+              style={styles.entryCard}
+            >
+              <View style={[styles.categoryIcon, { backgroundColor: (cat?.color || "#666") + "18" }]}>
+                <Ionicons name={cat?.icon || "ellipse"} size={20} color={cat?.color || "#666"} />
+              </View>
+              <View style={styles.entryDetails}>
+                <Text style={styles.entryTitle}>{item.title}</Text>
+                <Text style={styles.entryMeta}>
+                  {cat?.label || item.category} - {item.duration}min
+                  {item.notes ? ` - ${item.notes}` : ""}
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.statusBadge,
+                  {
+                    backgroundColor: item.completed
+                      ? Colors.light.accentLight
+                      : Colors.light.warningLight,
+                  },
+                ]}
+              >
+                <Ionicons
+                  name={item.completed ? "checkmark" : "time-outline"}
+                  size={14}
+                  color={item.completed ? Colors.light.accent : Colors.light.warning}
+                />
+              </View>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
     </View>
   );
 }
@@ -315,8 +311,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 20,
-    paddingBottom: 12,
+    marginBottom: 16,
   },
   headerTitle: {
     fontSize: 24,
@@ -324,20 +319,21 @@ const styles = StyleSheet.create({
     color: Colors.light.text,
   },
   addBtn: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: 22,
+    backgroundColor: Colors.light.tintLight,
   },
   formContainer: {
-    marginHorizontal: 20,
     backgroundColor: Colors.light.surface,
     borderRadius: 16,
     padding: 16,
-    marginBottom: 12,
-    shadowColor: Colors.light.cardShadow,
+    marginBottom: 16,
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 1,
+    shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 2,
   },
@@ -448,9 +444,9 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 14,
     marginBottom: 8,
-    shadowColor: Colors.light.cardShadow,
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 1,
+    shadowOpacity: 0.04,
     shadowRadius: 4,
     elevation: 1,
   },

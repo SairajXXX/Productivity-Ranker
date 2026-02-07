@@ -58,6 +58,8 @@ function getWeekBounds(dateStr?: string) {
 export async function registerRoutes(app: Express): Promise<Server> {
   const PgSession = connectPgSimple(session);
 
+  app.set("trust proxy", 1);
+
   app.use(
     session({
       store: new PgSession({
@@ -69,7 +71,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       saveUninitialized: false,
       cookie: {
         maxAge: 30 * 24 * 60 * 60 * 1000,
-        secure: false,
+        secure: true,
         httpOnly: true,
         sameSite: "none",
       },

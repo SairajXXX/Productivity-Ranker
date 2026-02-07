@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -8,13 +8,13 @@ import {
   FlatList,
   ActivityIndicator,
   Platform,
+  KeyboardAvoidingView,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { fetch } from "expo/fetch";
-import { getApiUrl, apiRequest, queryClient } from "@/lib/query-client";
+import { getApiUrl, apiRequest, queryClient, getQueryFn } from "@/lib/query-client";
 import * as Haptics from "expo-haptics";
 import Colors from "@/constants/colors";
 
@@ -55,6 +55,7 @@ function MessageBubble({ message }: { message: Message }) {
             styles.bubbleText,
             isUser ? styles.bubbleTextUser : styles.bubbleTextAssistant,
           ]}
+          selectable
         >
           {message.content}
         </Text>
@@ -92,14 +93,7 @@ export default function CoachScreen() {
 
   const historyQuery = useQuery<any[]>({
     queryKey: ["/api/chat/messages"],
-    queryFn: async () => {
-      const baseUrl = getApiUrl();
-      const res = await fetch(`${baseUrl}api/chat/messages`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to fetch");
-      return res.json();
-    },
+    queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
   useEffect(() => {
@@ -118,19 +112,20 @@ export default function CoachScreen() {
     mutationFn: () => apiRequest("DELETE", "/api/chat/messages"),
     onSuccess: () => {
       setMessages([]);
+      initializedRef.current = false;
       queryClient.invalidateQueries({ queryKey: ["/api/chat/messages"] });
     },
   });
 
-  async function handleSend() {
+  const handleSend = useCallback(async () => {
     const text = inputText.trim();
     if (!text || isStreaming) return;
 
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const capturedText = text;
     setInputText("");
 
-    const currentMessages = [...messages];
-    const userMsg: Message = { id: generateId(), role: "user", content: text };
+    const userMsg: Message = { id: generateId(), role: "user", content: capturedText };
     setMessages((prev) => [...prev, userMsg]);
     setIsStreaming(true);
     setShowTyping(true);
@@ -143,11 +138,13 @@ export default function CoachScreen() {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: capturedText }),
         credentials: "include",
       });
 
-      if (!response.ok) throw new Error("Failed to get response");
+      if (!response.ok) {
+        throw new Error("Failed to get response");
+      }
 
       const reader = response.body?.getReader();
       if (!reader) throw new Error("No response body");
@@ -155,6 +152,7 @@ export default function CoachScreen() {
       const decoder = new TextDecoder();
       let fullContent = "";
       let buffer = "";
+      const assistantId = generateId();
       let assistantAdded = false;
 
       while (true) {
@@ -167,7 +165,7 @@ export default function CoachScreen() {
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
-          const data = line.slice(6);
+          const data = line.slice(6).trim();
           if (data === "[DONE]") continue;
 
           try {
@@ -178,22 +176,36 @@ export default function CoachScreen() {
                 setShowTyping(false);
                 setMessages((prev) => [
                   ...prev,
-                  { id: generateId(), role: "assistant", content: fullContent },
+                  { id: assistantId, role: "assistant", content: fullContent },
                 ]);
                 assistantAdded = true;
               } else {
+                const currentContent = fullContent;
                 setMessages((prev) => {
                   const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    ...updated[updated.length - 1],
-                    content: fullContent,
-                  };
+                  const lastIdx = updated.length - 1;
+                  if (lastIdx >= 0 && updated[lastIdx].id === assistantId) {
+                    updated[lastIdx] = { ...updated[lastIdx], content: currentContent };
+                  }
                   return updated;
                 });
               }
             }
-          } catch {}
+            if (parsed.error) {
+              throw new Error(parsed.error);
+            }
+          } catch (e: any) {
+            if (e.message === parsed?.error) throw e;
+          }
         }
+      }
+
+      if (!assistantAdded && fullContent) {
+        setShowTyping(false);
+        setMessages((prev) => [
+          ...prev,
+          { id: assistantId, role: "assistant", content: fullContent },
+        ]);
       }
     } catch (error) {
       setShowTyping(false);
@@ -209,9 +221,10 @@ export default function CoachScreen() {
       setIsStreaming(false);
       setShowTyping(false);
     }
-  }
+  }, [inputText, isStreaming]);
 
   const reversedMessages = [...messages].reverse();
+  const hasMessages = messages.length > 0;
 
   return (
     <View style={[styles.container, { backgroundColor: Colors.light.background }]}>
@@ -220,27 +233,29 @@ export default function CoachScreen() {
           <Text style={styles.headerTitle}>AI Coach</Text>
           <Text style={styles.headerSubtitle}>Your productivity advisor</Text>
         </View>
-        <Pressable
-          onPress={() => clearMutation.mutate()}
-          style={styles.clearBtn}
-        >
+        <Pressable onPress={() => clearMutation.mutate()} hitSlop={8}>
           <Ionicons name="trash-outline" size={20} color={Colors.light.textSecondary} />
         </Pressable>
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
+      >
         <FlatList
           data={reversedMessages}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => <MessageBubble message={item} />}
-          inverted={messages.length > 0}
+          inverted={hasMessages}
           ListHeaderComponent={showTyping ? <TypingIndicator /> : null}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={[
             styles.messagesList,
-            messages.length === 0 && styles.emptyList,
+            !hasMessages && styles.emptyList,
           ]}
+          showsVerticalScrollIndicator={false}
           ListEmptyComponent={
             <View style={styles.emptyChat}>
               <View style={styles.emptyIconCircle}>
@@ -278,7 +293,7 @@ export default function CoachScreen() {
         <View
           style={[
             styles.inputBar,
-            { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) },
+            { paddingBottom: Math.max(insets.bottom, Platform.OS === "web" ? 34 : 8) + 4 },
           ]}
         >
           <View style={styles.inputWrapper}>
@@ -292,12 +307,10 @@ export default function CoachScreen() {
               multiline
               maxLength={1000}
               blurOnSubmit={false}
-              onSubmitEditing={handleSend}
             />
             <Pressable
               onPress={() => {
                 handleSend();
-                inputRef.current?.focus();
               }}
               disabled={isStreaming || !inputText.trim()}
               style={({ pressed }) => [
@@ -344,12 +357,6 @@ const styles = StyleSheet.create({
     color: Colors.light.textSecondary,
     marginTop: 2,
   },
-  clearBtn: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-  },
   messagesList: {
     paddingHorizontal: 16,
     paddingVertical: 12,
@@ -384,6 +391,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     maxWidth: "100%",
+    flexShrink: 1,
   },
   bubbleUser: {
     backgroundColor: Colors.light.tint,
@@ -392,9 +400,9 @@ const styles = StyleSheet.create({
   bubbleAssistant: {
     backgroundColor: Colors.light.surface,
     borderBottomLeftRadius: 4,
-    shadowColor: Colors.light.cardShadow,
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 1,
+    shadowOpacity: 0.04,
     shadowRadius: 4,
     elevation: 1,
   },
