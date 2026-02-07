@@ -14,7 +14,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { fetch } from "expo/fetch";
-import { getApiUrl, apiRequest, queryClient, getQueryFn } from "@/lib/query-client";
+import { getApiUrl, apiRequest, queryClient, getQueryFn, getAuthToken } from "@/lib/query-client";
 import * as Haptics from "expo-haptics";
 import Colors from "@/constants/colors";
 
@@ -132,14 +132,18 @@ export default function CoachScreen() {
 
     try {
       const baseUrl = getApiUrl();
+      const token = getAuthToken();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
       const response = await fetch(`${baseUrl}api/chat`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
+        headers,
         body: JSON.stringify({ message: capturedText }),
-        credentials: "include",
       });
 
       if (!response.ok) {

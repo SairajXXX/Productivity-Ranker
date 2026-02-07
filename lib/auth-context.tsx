@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from "react";
-import { apiRequest, getApiUrl } from "@/lib/query-client";
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, ReactNode } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { apiRequest, getApiUrl, setAuthToken } from "@/lib/query-client";
 import { fetch } from "expo/fetch";
 
 interface User {
@@ -27,58 +28,78 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const TOKEN_KEY = "peakflow_auth_token";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    checkAuth();
+    loadToken();
   }, []);
 
-  async function checkAuth() {
+  async function loadToken() {
     try {
-      const baseUrl = getApiUrl();
-      const res = await fetch(`${baseUrl}api/auth/me`, {
-        credentials: "include",
-      });
-      if (res.ok) {
-        const userData = await res.json();
-        setUser(userData);
+      const token = await AsyncStorage.getItem(TOKEN_KEY);
+      if (token) {
+        setAuthToken(token);
+        const baseUrl = getApiUrl();
+        const res = await fetch(`${baseUrl}api/auth/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const userData = await res.json();
+          setUser(userData);
+        } else {
+          await AsyncStorage.removeItem(TOKEN_KEY);
+          setAuthToken(null);
+        }
       }
     } catch {
+      await AsyncStorage.removeItem(TOKEN_KEY).catch(() => {});
+      setAuthToken(null);
     } finally {
       setIsLoading(false);
     }
   }
 
-  async function login(username: string, password: string) {
+  const login = useCallback(async (username: string, password: string) => {
     const res = await apiRequest("POST", "/api/auth/login", { username, password });
-    const userData = await res.json();
+    const data = await res.json();
+    const { token, ...userData } = data;
+    await AsyncStorage.setItem(TOKEN_KEY, token);
+    setAuthToken(token);
     setUser(userData);
-  }
+  }, []);
 
-  async function register(data: {
+  const register = useCallback(async (data: {
     username: string;
     email: string;
     password: string;
     fullName: string;
     occupation: string;
     goals: string;
-  }) {
+  }) => {
     const res = await apiRequest("POST", "/api/auth/register", data);
-    const userData = await res.json();
+    const responseData = await res.json();
+    const { token, ...userData } = responseData;
+    await AsyncStorage.setItem(TOKEN_KEY, token);
+    setAuthToken(token);
     setUser(userData);
-  }
+  }, []);
 
-  async function logout() {
-    await apiRequest("POST", "/api/auth/logout");
+  const logout = useCallback(async () => {
+    try {
+      await apiRequest("POST", "/api/auth/logout");
+    } catch {}
+    await AsyncStorage.removeItem(TOKEN_KEY).catch(() => {});
+    setAuthToken(null);
     setUser(null);
-  }
+  }, []);
 
   const value = useMemo(
     () => ({ user, isLoading, login, register, logout }),
-    [user, isLoading],
+    [user, isLoading, login, register, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -1,8 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "node:http";
-import session from "express-session";
-import connectPgSimple from "connect-pg-simple";
-import { pool } from "./db";
+import crypto from "crypto";
 import OpenAI from "openai";
 import {
   createUser,
@@ -28,16 +26,25 @@ const openai = new OpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
 
-declare module "express-session" {
-  interface SessionData {
-    userId: number;
-  }
+const tokenStore = new Map<string, number>();
+
+function generateToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function getUserIdFromToken(req: Request): number | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  const token = authHeader.slice(7);
+  return tokenStore.get(token) ?? null;
 }
 
 function requireAuth(req: Request, res: Response, next: Function) {
-  if (!req.session.userId) {
+  const userId = getUserIdFromToken(req);
+  if (!userId) {
     return res.status(401).json({ message: "Not authenticated" });
   }
+  (req as any).userId = userId;
   next();
 }
 
@@ -56,28 +63,6 @@ function getWeekBounds(dateStr?: string) {
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  const PgSession = connectPgSimple(session);
-
-  app.set("trust proxy", 1);
-
-  app.use(
-    session({
-      store: new PgSession({
-        pool: pool as any,
-        createTableIfMissing: true,
-      }),
-      secret: process.env.SESSION_SECRET || "productivity-app-secret",
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        maxAge: 30 * 24 * 60 * 60 * 1000,
-        secure: true,
-        httpOnly: true,
-        sameSite: "none",
-      },
-    }),
-  );
-
   app.post("/api/auth/register", async (req: Request, res: Response) => {
     try {
       const parsed = insertUserSchema.safeParse(req.body);
@@ -91,10 +76,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const user = await createUser(parsed.data);
-      req.session.userId = user.id;
+      const token = generateToken();
+      tokenStore.set(token, user.id);
 
       const { password, ...safeUser } = user;
-      res.status(201).json(safeUser);
+      res.status(201).json({ ...safeUser, token });
     } catch (error: any) {
       if (error?.constraint?.includes("email")) {
         return res.status(409).json({ message: "Email already in use" });
@@ -121,9 +107,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
-      req.session.userId = user.id;
+      const token = generateToken();
+      tokenStore.set(token, user.id);
+
       const { password, ...safeUser } = user;
-      res.json(safeUser);
+      res.json({ ...safeUser, token });
     } catch (error) {
       console.error("Login error:", error);
       res.status(500).json({ message: "Failed to login" });
@@ -131,16 +119,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.post("/api/auth/logout", (req: Request, res: Response) => {
-    req.session.destroy(() => {
-      res.json({ message: "Logged out" });
-    });
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith("Bearer ")) {
+      tokenStore.delete(authHeader.slice(7));
+    }
+    res.json({ message: "Logged out" });
   });
 
   app.get("/api/auth/me", async (req: Request, res: Response) => {
-    if (!req.session.userId) {
+    const userId = getUserIdFromToken(req);
+    if (!userId) {
       return res.status(401).json({ message: "Not authenticated" });
     }
-    const user = await getUserById(req.session.userId);
+    const user = await getUserById(userId);
     if (!user) {
       return res.status(401).json({ message: "User not found" });
     }
@@ -154,7 +145,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!parsed.success) {
         return res.status(400).json({ message: "Invalid input", errors: parsed.error.flatten() });
       }
-      const entry = await createProductivityEntry(req.session.userId!, parsed.data);
+      const entry = await createProductivityEntry((req as any).userId, parsed.data);
       res.status(201).json(entry);
     } catch (error) {
       console.error("Entry creation error:", error);
@@ -165,7 +156,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/entries", requireAuth, async (req: Request, res: Response) => {
     try {
       const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
-      const entries = await getEntriesByDate(req.session.userId!, date);
+      const entries = await getEntriesByDate((req as any).userId, date);
       res.json(entries);
     } catch (error) {
       console.error("Entries fetch error:", error);
@@ -180,7 +171,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "start and end dates required" });
       }
       const entries = await getEntriesByDateRange(
-        req.session.userId!,
+        (req as any).userId,
         start as string,
         end as string,
       );
@@ -195,7 +186,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const deleted = await deleteEntry(
         parseInt(req.params.id),
-        req.session.userId!,
+        (req as any).userId,
       );
       if (!deleted) {
         return res.status(404).json({ message: "Entry not found" });
@@ -209,14 +200,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/score/daily", requireAuth, async (req: Request, res: Response) => {
     try {
+      const userId = (req as any).userId;
       const date = (req.body.date as string) || new Date().toISOString().split("T")[0];
-      const entries = await getEntriesByDate(req.session.userId!, date);
+      const entries = await getEntriesByDate(userId, date);
 
       if (entries.length === 0) {
         return res.json({ score: 0, insight: "No activities logged today. Start tracking to get your productivity score!" });
       }
 
-      const user = await getUserById(req.session.userId!);
+      const user = await getUserById(userId);
       const entrySummary = entries
         .map(
           (e) =>
@@ -255,13 +247,13 @@ Respond in this exact JSON format:
       const score = Math.min(100, Math.max(0, Number(parsed.score) || 50));
       const insight = parsed.insight || "Keep pushing your productivity!";
 
-      await saveDailyScore(req.session.userId!, date, score, insight);
+      await saveDailyScore(userId, date, score, insight);
 
       const { weekStart, weekEnd } = getWeekBounds(date);
-      const weekScores = await getDailyScores(req.session.userId!, weekStart, weekEnd);
+      const weekScores = await getDailyScores(userId, weekStart, weekEnd);
       if (weekScores.length > 0) {
         const avg = weekScores.reduce((sum, s) => sum + s.score, 0) / weekScores.length;
-        await saveWeeklyScore(req.session.userId!, weekStart, weekEnd, Math.round(avg * 10) / 10, weekScores.length);
+        await saveWeeklyScore(userId, weekStart, weekEnd, Math.round(avg * 10) / 10, weekScores.length);
       }
 
       res.json({ score, insight, date });
@@ -274,7 +266,7 @@ Respond in this exact JSON format:
   app.get("/api/scores/daily", requireAuth, async (req: Request, res: Response) => {
     try {
       const { weekStart, weekEnd } = getWeekBounds();
-      const scores = await getDailyScores(req.session.userId!, weekStart, weekEnd);
+      const scores = await getDailyScores((req as any).userId, weekStart, weekEnd);
       res.json(scores);
     } catch (error) {
       console.error("Scores fetch error:", error);
@@ -295,7 +287,7 @@ Respond in this exact JSON format:
 
   app.get("/api/chat/messages", requireAuth, async (req: Request, res: Response) => {
     try {
-      const messages = await getChatMessages(req.session.userId!);
+      const messages = await getChatMessages((req as any).userId);
       res.json(messages);
     } catch (error) {
       console.error("Chat messages fetch error:", error);
@@ -305,7 +297,7 @@ Respond in this exact JSON format:
 
   app.delete("/api/chat/messages", requireAuth, async (req: Request, res: Response) => {
     try {
-      await clearChatMessages(req.session.userId!);
+      await clearChatMessages((req as any).userId);
       res.json({ message: "Chat cleared" });
     } catch (error) {
       console.error("Chat clear error:", error);
@@ -315,19 +307,20 @@ Respond in this exact JSON format:
 
   app.post("/api/chat", requireAuth, async (req: Request, res: Response) => {
     try {
+      const userId = (req as any).userId;
       const { message } = req.body;
       if (!message) {
         return res.status(400).json({ message: "Message is required" });
       }
 
-      const user = await getUserById(req.session.userId!);
-      const chatHistory = await getChatMessages(req.session.userId!);
+      const user = await getUserById(userId);
+      const chatHistory = await getChatMessages(userId);
 
-      await saveChatMessage(req.session.userId!, "user", message);
+      await saveChatMessage(userId, "user", message);
 
       const { weekStart, weekEnd } = getWeekBounds();
-      const recentEntries = await getEntriesByDateRange(req.session.userId!, weekStart, weekEnd);
-      const recentScores = await getDailyScores(req.session.userId!, weekStart, weekEnd);
+      const recentEntries = await getEntriesByDateRange(userId, weekStart, weekEnd);
+      const recentScores = await getDailyScores(userId, weekStart, weekEnd);
 
       const entriesSummary = recentEntries.length > 0
         ? recentEntries
@@ -387,7 +380,7 @@ Guidelines:
         }
       }
 
-      await saveChatMessage(req.session.userId!, "assistant", fullResponse);
+      await saveChatMessage(userId, "assistant", fullResponse);
 
       res.write("data: [DONE]\n\n");
       res.end();
