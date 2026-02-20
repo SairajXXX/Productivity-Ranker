@@ -20,6 +20,8 @@ please help me get this fiexd. My parents have let me prepare for the 2nd though
 i know i have done some mistakes too but my parents wont gonna buy me replit cre anither time. 
 also i started manully fixing the code but i am out of skils.
 
+my instagram acc.     _sairajghorpade9921
+
 please help meeeee
 
 
